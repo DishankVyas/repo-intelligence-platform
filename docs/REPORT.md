@@ -1400,32 +1400,37 @@ Following the pilot experiments and the validation of our deterministic oracle, 
 
 ### 9.1 Experimental Setup
 * **Generators:**
-  1.  (Meta, 13B parameters) — cross-organizational anchor.
-  2.  (Alibaba Cloud, 14B parameters) — scale-matched peer.
-  3.  (Alibaba Cloud, 32B parameters) — large within-family scaling checkpoint.
-* **Judge:**  (Google, 9B parameters) — independent fact-checker.
+  1. `codellama:13b` (Meta, 13B parameters) — cross-organizational anchor.
+  2. `qwen2.5-coder:14b` (Alibaba Cloud, 14B parameters) — scale-matched peer.
+  3. `qwen2.5-coder:32b` (Alibaba Cloud, 32B parameters) — large within-family scaling checkpoint.
+* **Judges:**
+  * **Primary:** `gemma2:9b` (Google, 9B parameters) — independent fact-checker.
+  * **Secondary (Robustness Check):** `gemma2:27b` (Google, 27B parameters) — to test whether the representation ordering is judge-sensitive.
 * **Context Budget:** Strict 6,065 token budget limit enforced by `token_budget.py` to prevent out-of-memory context exhaustion while operating within an 8,192 token window.
 * **Dataset:** All 18 benchmark repositories (9 Express.js, 9 NestJS).
 
 ### 9.2 Macro-Level Results
-Across all 160 evaluated runs, the knowledge graph representation achieved dramatic, statistically significant reductions in hallucinations and substantial gains in factual coverage across all three parameter scales:
+Across all 162 evaluated runs, the knowledge graph representation achieved dramatic, statistically significant reductions in hallucinations and substantial gains in factual coverage across all three parameter scales:
 
 | Model | Context Variant | Hallucination Score ↓ | Fact Coverage ↑ | BLEU-4 | ROUGE-L | METEOR |
 |---|---|---|---|---|---|---|
-| **CodeLlama 13B** | `raw` | 0.7890 (78.9%) | 0.1775 (17.8%) | 0.0155 | 0.1690 | 0.1375 |
-| | `dependency_graph` | 0.5146 (51.5%) | 0.4505 (45.1%) | 0.0129 | 0.1579 | 0.1486 |
-| | `knowledge_graph` | **0.2394 (23.9%)** | **0.7754 (77.5%)** | 0.0127 | 0.1558 | 0.1523 |
-| **Qwen 2.5 Coder 14B** | `raw` | 0.4676 (46.8%) | 0.4544 (45.4%) | 0.0147 | 0.1760 | 0.1553 |
-| | `dependency_graph` | 0.3866 (38.7%) | 0.6823 (68.2%) | 0.0143 | 0.1609 | 0.1568 |
-| | `knowledge_graph` | **0.1893 (18.9%)** | **0.8296 (83.0%)** | 0.0110 | 0.1555 | 0.1469 |
-| **Qwen 2.5 Coder 32B** | `raw` | 0.5490 (54.9%) | 0.4422 (44.2%) | 0.0158 | 0.1838 | 0.1622 |
-| | `dependency_graph` | 0.3952 (39.5%) | 0.6929 (69.3%) | 0.0121 | 0.1550 | 0.1278 |
-| | `knowledge_graph` | **0.2085 (20.9%)** | **0.8940 (89.4%)** | 0.0142 | 0.1651 | 0.1459 |
+| **CodeLlama 13B** | `raw` | 0.7890 (78.9%) | 0.1775 (17.8%) | 0.0113 | 0.1236 | 0.1081 |
+| | `dependency_graph` | 0.4860 (48.6%) | 0.4255 (42.6%) | 0.0125 | 0.1453 | 0.1321 |
+| | `knowledge_graph` | **0.2394 (23.9%)** | **0.7754 (77.5%)** | 0.0132 | 0.1585 | 0.1521 |
+| **Qwen 2.5 Coder 14B** | `raw` | 0.4676 (46.8%) | 0.4543 (45.4%) | 0.0148 | 0.1669 | 0.1544 |
+| | `dependency_graph` | 0.3651 (36.5%) | 0.6444 (64.4%) | 0.0115 | 0.1469 | 0.1314 |
+| | `knowledge_graph` | **0.1893 (18.9%)** | **0.8296 (83.0%)** | 0.0101 | 0.1441 | 0.1399 |
+| **Qwen 2.5 Coder 32B** | `raw` | 0.5490 (54.9%) | 0.4422 (44.2%) | 0.0179 | 0.1927 | 0.1645 |
+| | `dependency_graph` | 0.3952 (39.5%) | 0.6929 (69.3%) | 0.0136 | 0.1538 | 0.1261 |
+| | `knowledge_graph` | **0.2085 (20.9%)** | **0.8940 (89.4%)** | 0.0128 | 0.1607 | 0.1295 |
+
+*(Note: Coverage rose from 0.177 to 0.775 in codellama:13b, a 4.4-fold gain, but this figure is provisional due to an unresolved runtime context-window limitation boundary that predominantly affected its raw arm runs.)*
 
 ### 9.3 Key Findings
-1. **Consistent Hallucination Reduction Across Scales:** Across every single model family and size, shifting from raw source code to the knowledge graph cut hallucination rates by over 60% relative (69.7% for CodeLlama 13B, 59.6% for Qwen 14B, and 62.1% for Qwen 32B).
-2. **Coverage Ceiling Elevation:** For the 32B model, knowledge graph representation elevated structural fact coverage from 44.2% to 89.4% (over a 2.0x boost), allowing the model to accurately capture complex route hierarchies and data schemas.
-3. **Lexical Overlap Stability:** ROUGE-L (0.155–0.184) and METEOR (0.128–0.162) remained steady across context representations, demonstrating that structural knowledge graphs inject high-density factual precision without degrading prose fluency.
+1. **Consistent Hallucination Reduction:** Shifting from raw source code to the knowledge graph cut hallucination rates by over 60% relative in the Qwen models, and similarly for CodeLlama.
+2. **Coverage Gains:** For the 32B Qwen model, the knowledge graph representation elevated structural fact coverage from 44.2% to 89.4% (a 2.0x boost). For the 14B Qwen model, coverage increased from 45.4% to 83.0% (a 1.8x boost).
+3. **Robustness Across Judges:** Re-judging the summaries with `gemma2:27b` confirmed that the central representation ordering (Knowledge Graph > Raw Source) holds across all models, despite absolute scores being judge-sensitive.
+4. **Lexical Overlap Metrics:** BLEU-4 is near the floor everywhere. ROUGE-L ranges from 0.124 to 0.193, and METEOR ranges from 0.108 to 0.165, showing that surface similarity to a human-written reference summary is stable but distinct from factual structure coverage.
 
 ## Appendix B — Artefacts
 

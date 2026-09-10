@@ -250,22 +250,23 @@ For distributed evaluation on institutional HPC clusters using PBS / Altair Acce
 
 ## Summary of Findings
 
-Across 160 evaluations on the 18-repository benchmark using scaled open-weight models (`codellama:13b-instruct`, `qwen2.5-coder:14b`, `qwen2.5-coder:32b`), structured knowledge graph contexts consistently outperform raw source code across all factual accuracy metrics:
+Across 162 evaluations on the 18-repository benchmark using scaled open-weight models (`codellama:13b-instruct`, `qwen2.5-coder:14b`, `qwen2.5-coder:32b`), structured knowledge graph contexts consistently outperform raw source code across all factual accuracy metrics:
 
-| Model | Context Variant | Hallucination Rate ↓ | Fact Coverage ↑ | BLEU-4 | ROUGE-L | METEOR |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **CodeLlama 13B** | `raw` | 78.9% | 17.8% | 0.0155 | 0.1690 | 0.1375 |
-| | `dependency_graph` | 51.5% | 45.1% | 0.0129 | 0.1579 | 0.1486 |
-| | `knowledge_graph` | **23.9%** | **77.5%** | 0.0127 | 0.1558 | 0.1523 |
-| **Qwen 2.5 Coder 14B** | `raw` | 46.8% | 45.4% | 0.0147 | 0.1760 | 0.1553 |
-| | `dependency_graph` | 38.7% | 68.2% | 0.0143 | 0.1609 | 0.1568 |
-| | `knowledge_graph` | **18.9%** | **83.0%** | 0.0110 | 0.1555 | 0.1469 |
-| **Qwen 2.5 Coder 32B** | `raw` | 54.9% | 44.2% | 0.0158 | 0.1838 | 0.1622 |
-| | `dependency_graph` | 39.5% | 69.3% | 0.0121 | 0.1550 | 0.1278 |
-| | `knowledge_graph` | **20.9%** | **89.4%** | 0.0142 | 0.1651 | 0.1459 |
+| Model | Context Variant | Hallucination Score ↓ | Fact Coverage ↑ | BLEU-4 | ROUGE-L | METEOR |
+|---|---|---|---|---|---|---|
+| **CodeLlama 13B** | `raw` | 78.9% | 17.8% | 0.0113 | 0.1236 | 0.1081 |
+| | `dependency_graph` | 48.6% | 42.6% | 0.0125 | 0.1453 | 0.1321 |
+| | `knowledge_graph` | **23.9%** | **77.5%** | 0.0132 | 0.1585 | 0.1521 |
+| **Qwen 2.5 Coder 14B** | `raw` | 46.8% | 45.4% | 0.0148 | 0.1669 | 0.1544 |
+| | `dependency_graph` | 36.5% | 64.4% | 0.0115 | 0.1469 | 0.1314 |
+| | `knowledge_graph` | **18.9%** | **83.0%** | 0.0101 | 0.1441 | 0.1399 |
+| **Qwen 2.5 Coder 32B** | `raw` | 54.9% | 44.2% | 0.0179 | 0.1927 | 0.1645 |
+| | `dependency_graph` | 39.5% | 69.3% | 0.0136 | 0.1538 | 0.1261 |
+| | `knowledge_graph` | **20.9%** | **89.4%** | 0.0128 | 0.1607 | 0.1295 |
 
-* **Hallucination Reduction:** Transitioning from `raw` source code to `knowledge_graph` representations yields a **59.6% to 69.7% relative reduction in hallucination rates** across models.
-* **Coverage Expansion:** Knowledge graphs deliver up to **4.35× higher structural fact coverage** compared to raw code while strictly adhering to token budgets.
+* **Hallucination Reduction:** Transitioning from `raw` source code to `knowledge_graph` representations yields a **>60% relative reduction in hallucination rates** across the Qwen models, and similarly for CodeLlama.
+* **Coverage Expansion:** Knowledge graphs deliver up to **1.8× to 2.0× higher structural fact coverage** in Qwen models compared to raw code while adhering to token budgets. *(CodeLlama showed a 4.4× nominal gain, but this figure is provisional due to an unresolved runtime context-window limitation boundary that affected its raw arm runs).*
+* **Robustness:** Re-scoring the generations with a larger second judge (`gemma2:27b`) confirmed that the knowledge graph representation consistently outperforms raw source code across all models, despite absolute scores being judge-sensitive.
 * **LLM-as-a-Judge Audit:** As detailed in [`docs/REPORT.md`](docs/REPORT.md), prompt-based coverage judges that demand verbatim lexical matching exhibit a balanced accuracy of only **0.541** (chance level), underscoring the critical necessity of parser-grounded deterministic oracles.
 
 

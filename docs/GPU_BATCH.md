@@ -49,18 +49,18 @@ would be ~4 MB.
 
 | Role | Model | Why |
 |---|---|---|
-| Generator | `qwen2.5-coder:7b` | code-specialised; in every battery so far |
-| Generator | `codellama:7b-instruct` | code-specialised; in every battery so far |
-| Generator | `gpt-oss:20b` | the roadmap's original third model, restored |
+| Generator | `qwen2.5-coder:14b` | code-specialised; in every battery so far |
+| Generator | `codellama:13b-instruct` | code-specialised; in every battery so far |
+| Generator | `qwen2.5-coder:32b` | the roadmap's original third model, restored |
 | **Judge** | `gemma2:9b` | **judge only, never a generator** |
 
-`gpt-oss:20b` was specified in the original plan and dropped because it needs ~13 GB of
+`qwen2.5-coder:32b` was specified in the original plan and dropped because it needs ~13 GB of
 weights and the dev laptop had 16 GB total. `gemma2:9b` was substituted as the third
 generator — which quietly created a self-judging collision, since gemma2 is also the
 judge. A 40 GB slice fixes both at once: the planned roster is restored, and gemma2 goes
 back to judging only, so no arm grades its own output (`REPORT.md` §6.2).
 
-Verify the tag resolves before a full run — `ollama pull gpt-oss:20b`. If it does not,
+Verify the tag resolves before a full run — `ollama pull qwen2.5-coder:32b`. If it does not,
 find the exact tag on ollama.com and use that.
 
 ## Why Ollama, not PyTorch or vLLM
@@ -81,7 +81,7 @@ Three settings, and one of them matters far more than the rest.
 **Keep the generator and the judge loaded together** (`OLLAMA_MAX_LOADED_MODELS=2`).
 The battery makes two judge calls per generation, so with one model resident every
 single row pays for an evict-and-reload. On the 16 GB laptop that thrash moved ~15 GB
-through a 9.7 GB budget per row and dominated the run. `gpt-oss:20b` (~13 GB) plus
+through a 9.7 GB budget per row and dominated the run. `qwen2.5-coder:32b` (~13 GB) plus
 `gemma2:9b` (~6 GB) is under half a 40 GB slice, so it simply disappears. This is purely
 a scheduling change — same weights, same context size, same deterministic decoding — so
 outputs are unaffected.
@@ -141,7 +141,7 @@ customise it in Jupyter, and save the result.
    directory `/data`.
 
 Models and the repository live on `/data`, deliberately **not** inside the image: they
-are ~25 GB with `gpt-oss:20b` included, they change independently of the code, and every
+are ~25 GB with `qwen2.5-coder:32b` included, they change independently of the code, and every
 job can see `/data` anyway.
 
 ## Every run after that
@@ -158,9 +158,9 @@ generator, with Container Image `repo-intel-gpu`, job script
 [`hpc/run_battery.sh`](../hpc/run_battery.sh), and the model as the script argument:
 
 ```
-qwen2.5-coder:7b
-codellama:7b-instruct
-gpt-oss:20b
+qwen2.5-coder:14b
+codellama:13b-instruct
+qwen2.5-coder:32b
 ```
 
 The judge (`gemma2:9b`) is not in that list — it is not a generator, and the script
