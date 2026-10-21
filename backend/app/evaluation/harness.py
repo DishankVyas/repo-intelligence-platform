@@ -45,12 +45,13 @@ from app.evaluation.text_overlap import TextOverlapResult, extract_overview, sco
 from app.pipeline import (
     AnalysisError,
     PipelineInfrastructureError,
+    _default_comparison_models,
     generate_across_contexts,
     run_representation_ablation,
 )
 from app.providers.base import BaseLLMProvider
 from app.providers.ollama_provider import OllamaProvider
-from app.schemas.llm_result import LLMResult, RunStatus
+from app.schemas.llm_result import ContextVariant, LLMResult, RunStatus
 from app.schemas.parser_schema import ParsedRepository
 
 
@@ -66,6 +67,11 @@ class EvaluationRow(BaseModel):
     output_tokens: int
     estimated_cost_usd: float
     judge_model: str
+    # Generator decoding, recorded per row so repeated runs (CICT-2026 reviewer R4)
+    # are distinguishable in one accumulated SQLite table. Judges always decode at
+    # temperature 0 with a fixed seed, whatever these say -- see run_evaluation.
+    seed: Optional[int] = None
+    temperature: Optional[float] = None
     self_judged: bool  # generator == judge; filter these out when analysing, if desired
     hallucination_judged: bool  # did the judge's own output parse
     hallucination_score: float
@@ -145,6 +151,8 @@ def run_evaluation(
     driver: Optional[Driver] = None,
     provider: Optional[BaseLLMProvider] = None,
     context_pack: Optional["ContextPack"] = None,
+    judge_provider: Optional[BaseLLMProvider] = None,
+    variants: Optional[list[ContextVariant]] = None,
 ) -> list[EvaluationRow]:
     """One shared Neo4j driver and provider across the whole batch (created here if
     not injected). A single repo failing -- bad URL, unsupported framework, Neo4j
@@ -172,7 +180,14 @@ def run_evaluation(
     contexts and parses are read from the pack instead of being rebuilt. This is what
     lets the batch run on a job-scheduled GPU node with no database and no route to
     github.com -- see scripts/build_context_pack.py. Scoring is unchanged, because it
-    scores against the parsed repository, which the pack carries."""
+    scores against the parsed repository, which the pack carries. A v2 pack holds
+    contexts per generator, budgeted in that generator's tokenizer; each model is
+    handed its own.
+
+    `judge_provider` does all judging; it defaults to `provider`. Pass a separate one
+    whenever the generator samples (temperature > 0) so that repeated runs vary only
+    the summaries, never the grading. `variants` restricts which arms are generated
+    (e.g. only rag_bm25 when adding the baseline to an existing battery)."""
     # A packed run must not open a driver: the whole point is that no Neo4j exists on
     # the node. get_driver() is lazy about connecting, but constructing it here would
     # still fail on a host with no bolt route configured at all.
@@ -181,6 +196,13 @@ def run_evaluation(
         from app.db.neo4j_client import get_driver
         driver = driver or get_driver()
     provider = provider or OllamaProvider()
+    judge_provider = judge_provider or provider
+    # Recorded only when the provider actually exposes them (an injected test double or
+    # a non-Ollama provider may not).
+    gen_seed = getattr(provider, "seed", None)
+    gen_seed = gen_seed if isinstance(gen_seed, int) else None
+    gen_temperature = getattr(provider, "temperature", None)
+    gen_temperature = float(gen_temperature) if isinstance(gen_temperature, (int, float)) else None
     judge_model = judge_model or provider.default_model
     if reference_summaries_dir is not None and bert_scorer is None:
         from app.evaluation.text_overlap import default_bert_scorer
@@ -198,9 +220,14 @@ def run_evaluation(
             try:
                 if packed is not None:
                     parsed = packed.parsed
-                    results = generate_across_contexts(
-                        parsed, packed.context_map(), models=models, provider=provider
-                    )
+                    results = []
+                    for model in models or _default_comparison_models():
+                        contexts = packed.context_map(model)
+                        if variants is not None:
+                            contexts = {v: c for v, c in contexts.items() if v in variants}
+                        results.extend(
+                            generate_across_contexts(parsed, contexts, models=[model], provider=provider)
+                        )
                 else:
                     parsed, results = run_representation_ablation(
                         url,
@@ -218,7 +245,7 @@ def run_evaluation(
             for result in results:
                 rows.append(
                     _row_for_result(
-                        provider,
+                        judge_provider,
                         parsed,
                         result,
                         judge_model,
@@ -227,6 +254,8 @@ def run_evaluation(
                         bert_scorer=bert_scorer,
                         enable_quality_judge=enable_quality_judge,
                         quality_judge_host=quality_judge_host,
+                        seed=gen_seed,
+                        temperature=gen_temperature,
                     )
                 )
     finally:
@@ -272,6 +301,8 @@ def _row_for_result(
     bert_scorer=None,
     enable_quality_judge: bool = False,
     quality_judge_host: Optional[str] = None,
+    seed: Optional[int] = None,
+    temperature: Optional[float] = None,
 ) -> EvaluationRow:
     self_judged = result.model == judge_model
     text_overlap: Optional[TextOverlapResult] = None
@@ -366,6 +397,8 @@ def _row_for_result(
         output_tokens=result.metrics.output_tokens,
         estimated_cost_usd=result.metrics.estimated_cost_usd,
         judge_model=judge_model,
+        seed=seed,
+        temperature=temperature,
         self_judged=self_judged,
         hallucination_judged=hallucination_judged,
         hallucination_score=hallucination_score,
@@ -525,6 +558,20 @@ def main() -> None:
         default=None,
         help="Ollama host for the G-Eval judge's raw /api/generate calls (default: $OLLAMA_HOST)",
     )
+    parser.add_argument(
+        "--seed", type=int, default=42,
+        help="Generator sampling seed. Repeat a battery with different seeds to measure "
+        "run-to-run variance; the judge's seed is fixed regardless.",
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=0.0,
+        help="Generator temperature (default 0, greedy -- the published condition). "
+        "The judge always runs at 0.",
+    )
+    parser.add_argument(
+        "--variants", nargs="*", default=None, choices=[v.value for v in ContextVariant],
+        help="Only generate these arms (default: every arm in the pack)",
+    )
     parser.add_argument("--out", default="evaluation_results.csv", help="Output CSV path")
     parser.add_argument(
         "--sqlite", default=None, help="Optional SQLite DB path to also append results to"
@@ -549,8 +596,14 @@ def main() -> None:
     elif not args.urls:
         parser.error("give repo URLs, or --context-pack")
 
+    provider = OllamaProvider(seed=args.seed, temperature=args.temperature)
+    # Judging is never sampled: a fixed grader is what makes repeated runs comparable.
+    judge_provider = OllamaProvider()
     rows = run_evaluation(
         args.urls,
+        provider=provider,
+        judge_provider=judge_provider,
+        variants=[ContextVariant(v) for v in args.variants] if args.variants else None,
         models=args.models,
         judge_model=args.judge_model,
         annotations_dir=args.annotations_dir,

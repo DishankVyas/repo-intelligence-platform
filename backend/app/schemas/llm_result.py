@@ -29,6 +29,11 @@ class ContextVariant(str, Enum):
     RAW = "raw"
     DEPENDENCY_GRAPH = "dependency_graph"
     KNOWLEDGE_GRAPH = "knowledge_graph"
+    # Retrieval baseline added for the CICT-2026 revision (reviewer R2): BM25-ranked
+    # source chunks at the knowledge graph's own token count, so it isolates
+    # "structure vs. selected raw text" at a matched budget. Pack-only -- built by
+    # scripts/build_context_pack.py, never by the live API.
+    RAG_BM25 = "rag_bm25"
 
 
 class ProviderName(str, Enum):

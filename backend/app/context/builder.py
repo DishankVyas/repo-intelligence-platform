@@ -11,6 +11,8 @@ explicit decision about where raw source gets cached across the pipeline.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from neo4j import Driver, ManagedTransaction
 
 from app.schemas.llm_result import ContextVariant
@@ -20,7 +22,11 @@ class ContextBuilderError(Exception):
     """Raised when a context can't be built for the requested variant/repo."""
 
 
-def build_context(driver: Driver, repo_name: str, variant: ContextVariant) -> str:
+def build_context(
+    driver: Driver, repo_name: str, variant: ContextVariant, model: Optional[str] = None
+) -> str:
+    """`model` selects whose tokenizer the budget is counted in (see token_budget.py);
+    None keeps the cl100k proxy used by the live API."""
     if variant == ContextVariant.RAW:
         raise ContextBuilderError(
             "RAW context requires the repo's raw source text, which isn't retained "
@@ -31,10 +37,10 @@ def build_context(driver: Driver, repo_name: str, variant: ContextVariant) -> st
     with driver.session() as session:
         if variant == ContextVariant.DEPENDENCY_GRAPH:
             rows = session.execute_read(_query_dependency_graph, repo_name)
-            return _format_dependency_graph(rows, repo_name)
+            return _format_dependency_graph(rows, repo_name, model)
 
         data = session.execute_read(_query_knowledge_graph, repo_name)
-        return _format_knowledge_graph(data, repo_name)
+        return _format_knowledge_graph(data, repo_name, model)
 
 
 def _query_dependency_graph(tx: ManagedTransaction, repo_name: str) -> list[dict]:
@@ -52,7 +58,7 @@ def _query_dependency_graph(tx: ManagedTransaction, repo_name: str) -> list[dict
     return [dict(record) for record in result]
 
 
-def _format_dependency_graph(rows: list[dict], repo_name: str) -> str:
+def _format_dependency_graph(rows: list[dict], repo_name: str, model: Optional[str] = None) -> str:
     from app.context.token_budget import compute_context_token_budget, get_encoder
     import logging
     logger = logging.getLogger(__name__)
@@ -60,8 +66,8 @@ def _format_dependency_graph(rows: list[dict], repo_name: str) -> str:
     if not rows:
         return "No modules found for this repository."
 
-    enc = get_encoder()
-    budget = compute_context_token_budget()
+    enc = get_encoder(model)
+    budget = compute_context_token_budget(model=model)
     
     all_external: set[str] = set()
     modules_lines = []
@@ -135,7 +141,7 @@ def _query_knowledge_graph(tx: ManagedTransaction, repo_name: str) -> dict:
     return dict(record) if record else {}
 
 
-def _format_knowledge_graph(data: dict, repo_name: str) -> str:
+def _format_knowledge_graph(data: dict, repo_name: str, model: Optional[str] = None) -> str:
     from app.context.token_budget import compute_context_token_budget, get_encoder
     import logging
     logger = logging.getLogger(__name__)
@@ -143,8 +149,8 @@ def _format_knowledge_graph(data: dict, repo_name: str) -> str:
     if not data:
         return "No graph data found for this repository."
 
-    enc = get_encoder()
-    budget = compute_context_token_budget()
+    enc = get_encoder(model)
+    budget = compute_context_token_budget(model=model)
 
     module_rows = [m for m in data.get("module_rows", []) if m and m.get("path")]
     module_rows.sort(key=lambda m: m["path"])

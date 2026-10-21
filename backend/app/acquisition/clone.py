@@ -61,11 +61,16 @@ def clone_repository(
     url: str,
     max_size_mb: int = DEFAULT_MAX_REPO_SIZE_MB,
     workdir: Path | None = None,
+    commit_sha: str | None = None,
 ) -> AcquiredRepo:
     """
     Shallow-clones the given GitHub repo (depth=1, no full history) into a temp
     directory. Raises InvalidRepoUrlError, CloneFailedError, or RepoTooLargeError.
     Caller is responsible for calling .cleanup() on the returned AcquiredRepo when done.
+
+    `commit_sha` pins the checkout to that exact commit instead of the default
+    branch's head -- needed to rebuild a study's inputs after upstream has moved on.
+    GitHub serves single commits by SHA, so this stays a depth-1 fetch.
     """
     owner, repo_name = validate_github_url(url)
 
@@ -74,6 +79,9 @@ def clone_repository(
 
     try:
         repo = git.Repo.clone_from(url, dest, depth=1, single_branch=True)
+        if commit_sha and repo.head.commit.hexsha != commit_sha:
+            repo.git.fetch("--depth", "1", "origin", commit_sha)
+            repo.git.checkout(commit_sha)
     except GitCommandError as e:
         shutil.rmtree(dest_root, ignore_errors=True)
         raise CloneFailedError(f"Failed to clone {url}: {e}") from e

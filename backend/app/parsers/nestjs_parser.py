@@ -125,7 +125,7 @@ class NestJSParser(BaseParser):
 
         for file_path in source_files:
             module_id = path_to_module_id[file_path.resolve()]
-            rel_path = str(file_path.relative_to(repo_path))
+            rel_path = file_path.relative_to(repo_path).as_posix()
             try:
                 source_bytes = file_path.read_bytes()
             except OSError as e:
@@ -218,10 +218,14 @@ class NestJSParser(BaseParser):
                 or f.name.endswith(".e2e-spec.ts")
                 or any(part in TEST_DIRS for part in rel_parts)
             ):
-                files_skipped.append(str(f.relative_to(repo_path)) + " (test file, skipped)")
+                files_skipped.append(f.relative_to(repo_path).as_posix() + " (test file, skipped)")
                 continue
             results.append(f)
-        return sorted(results)
+        # Case-sensitive, part-by-part -- what PurePosixPath ordering does. Sorting Path
+        # objects directly is case-INsensitive on Windows, which reorders modules (and
+        # with them module ids, endpoints, and which facts survive the 40-per-category
+        # cap) relative to a parse of the same commit on Linux or macOS.
+        return sorted(results, key=lambda f: f.relative_to(repo_path).parts)
 
     def _extract_imports(self, root: Node, source: bytes) -> list[str]:
         """Returns the string source of every `import ... from '<source>'` --

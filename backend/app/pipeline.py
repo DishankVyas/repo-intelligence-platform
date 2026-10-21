@@ -181,17 +181,6 @@ def _try_parse_summary_json(raw_text: str) -> tuple[dict | None, bool]:
     if not isinstance(parsed, dict) or not REQUIRED_SUMMARY_KEYS.issubset(parsed.keys()):
         return None, False
     return parsed, True
-    """Downstream parsing of the model's raw_text into the structured shape the
-    prompt asked for (see providers/base.py: this is deliberately not the
-    provider's job). Malformed or off-schema output is a real possibility with
-    local models, not just a hypothetical -- treated as invalid, not raised."""
-    try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError:
-        return None, False
-    if not isinstance(parsed, dict) or not REQUIRED_SUMMARY_KEYS.issubset(parsed.keys()):
-        return None, False
-    return parsed, True
 
 
 def _default_comparison_models() -> list[str]:
@@ -207,17 +196,17 @@ def _default_comparison_models() -> list[str]:
 
 
 def _read_raw_source(
-    repo_path: Path, parsed: ParsedRepository
+    repo_path: Path, parsed: ParsedRepository, model: str | None = None
 ) -> str:
     """RAW ContextVariant: the repo's own source text, concatenated per-module and
-    truncated to fit within the token budget. Token budget is calculated using tiktoken
-    (cl100k_base proxy) based on OLLAMA_NUM_CTX minus template overhead."""
+    truncated to fit within the token budget -- OLLAMA_NUM_CTX minus template overhead,
+    counted in `model`'s own tokens (cl100k proxy when None; see token_budget.py)."""
     import logging
     from app.context.token_budget import compute_context_token_budget, get_encoder
     
     logger = logging.getLogger(__name__)
-    enc = get_encoder()
-    budget = compute_context_token_budget()
+    enc = get_encoder(model)
+    budget = compute_context_token_budget(model=model)
     
     chunks: list[str] = []
     total_tokens = 0

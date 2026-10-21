@@ -60,6 +60,14 @@ class OllamaProvider(BaseLLMProvider):
         self._temperature = temperature
         self._seed = seed
 
+    @property
+    def seed(self) -> int:
+        return self._seed
+
+    @property
+    def temperature(self) -> float:
+        return self._temperature
+
     def _call_model(
         self, model: str, system_prompt: str, user_prompt: str
     ) -> tuple[str, int, int]:
