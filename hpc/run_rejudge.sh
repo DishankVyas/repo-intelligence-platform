@@ -26,6 +26,9 @@
 set -euo pipefail
 
 JUDGE="${1:-${JUDGE:-}}"
+# Optional further arguments name the batteries to re-judge (default: the published
+# three), e.g. "mistral:7b-instruct rev_codellama13b_s42_t0 rev_qwen14b_s42_t0 rev_qwen32b_s42_t0".
+if [[ $# -gt 1 ]]; then BATTERY_STEMS="${*:2}"; fi
 : "${JUDGE:?usage: run_rejudge.sh <secondary-judge>   e.g. mistral:7b-instruct}"
 
 # Only these two secondary judges are valid. Using a different model invalidates
@@ -42,7 +45,10 @@ USER_NAME="${USER:-$(id -un)}"
 DATA="${DATA:-/data/${USER_NAME}}"
 PROJ="${PROJ:-${DATA}/repo-intel-platform}"
 OUT_DIR="${OUT_DIR:-${DATA}/evaluation_results}"
-PACK="${PACK:-${DATA}/context_pack.json}"
+# The v2 pack when present (revision runs), else the original.
+if [[ -z "${PACK:-}" ]]; then
+  PACK="${DATA}/context_pack_v2.json"; [[ -f "$PACK" ]] || PACK="${DATA}/context_pack.json"
+fi
 JUDGE_SLUG="$(echo "$JUDGE" | tr ':.' '__' | tr '/' '_')"
 export PATH="${DATA}/ollama-dist/bin:${DATA}/bin:/usr/local/bin:${PATH}"
 export LD_LIBRARY_PATH="${DATA}/ollama-dist/lib/ollama:${LD_LIBRARY_PATH:-}"
@@ -85,8 +91,10 @@ fi
 # --- source DB check ----------------------------------------------------------
 # All three new battery DBs must be present. A missing DB is a warning (we skip
 # it), but if NONE are found the job has nothing to do and should fail loudly.
+# BATTERY_STEMS overrides which batteries are re-judged, e.g. for the CICT-2026 revision
+# runs: BATTERY_STEMS="rev_codellama13b_s42_t0 rev_qwen14b_s42_t0 rev_qwen32b_s42_t0".
 SRC_DBS=()
-for stem in codellama13b qwen14b qwen32b; do
+for stem in ${BATTERY_STEMS:-codellama13b qwen14b qwen32b}; do
   p="$OUT_DIR/battery_${stem}.db"
   if [[ -f "$p" ]]; then
     SRC_DBS+=("$p")

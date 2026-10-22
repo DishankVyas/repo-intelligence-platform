@@ -19,6 +19,13 @@
 #   qwen2.5-coder:14b        -- scale-matched vs codellama:13b (~9 GB Q4_K_M)
 #   qwen2.5-coder:32b        -- two-point within-family check (~20 GB Q4_K_M)
 #
+# CICT-2026 revision: pass a seed as the second argument to repeat a battery (reviewer
+# R4 asks for variance across runs), e.g. "qwen2.5-coder:14b 2"; an optional third
+# argument sets the generator temperature (default 0). Outputs are written to
+# battery_rev_<model>_s<seed>_t<temp>.{csv,db} and never touch the published battery_<model>.db
+# files. The pack must be a v2 pack (per-model contexts + rag_bm25) -- see
+# docs/REVISION_RUNS.md. The judge always runs at temperature 0.
+#
 # Submit this three times, once per generator, rather than looping over models here.
 # Three jobs run on three of the four MIG slices at once and finish in roughly the time
 # of one; a loop would take three times as long on a single slice. It also means one
@@ -26,13 +33,15 @@
 set -euo pipefail
 
 MODEL="${1:-${MODEL:-}}"
-: "${MODEL:?usage: run_battery.sh <generator-model>   e.g. qwen2.5-coder:14b}"
+: "${MODEL:?usage: run_battery.sh <generator-model> [seed] [temperature]   e.g. qwen2.5-coder:14b 1 0}"
+SEED="${2:-${SEED:-42}}"
+GEN_TEMPERATURE="${3:-${GEN_TEMPERATURE:-0}}"
 JUDGE_MODEL="${JUDGE_MODEL:-gemma2:9b}"
 
 USER_NAME="${USER:-$(id -un)}"
 DATA="${DATA:-/data/${USER_NAME}}"
 PROJ="${PROJ:-${DATA}/repo-intel-platform}"
-PACK="${PACK:-${DATA}/context_pack.json}"
+PACK="${PACK:-${DATA}/context_pack_v2.json}"
 OUT_DIR="${OUT_DIR:-${DATA}/evaluation_results}"
 # Ollama may be in /usr/local/bin (root install) or in one of two non-root locations:
 # - $DATA/bin/ollama        (legacy single-binary install)
@@ -48,6 +57,7 @@ case "$MODEL" in
   qwen2.5-coder:32b)      RUN_TAG="qwen32b" ;;
   *)                      RUN_TAG="$(echo "$MODEL" | tr ':/' '__')" ;;
 esac
+RUN_TAG="rev_${RUN_TAG}_s${SEED}_t${GEN_TEMPERATURE}"
 
 # --- Python deps bootstrap ---------------------------------------------------------------
 # The pytorch_pbs base image does not have the project's Python deps pre-installed.
@@ -87,7 +97,8 @@ export OLLAMA_NUM_PARALLEL=1
 export OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
 
 echo "=== configuration ==="
-printf '  %-14s %s\n' generator "$MODEL" judge "$JUDGE_MODEL" pack "$PACK" out "$OUT_DIR" models "$OLLAMA_MODELS"
+printf '  %-14s %s\n' generator "$MODEL" judge "$JUDGE_MODEL" seed "$SEED" temperature "$GEN_TEMPERATURE" \
+  pack "$PACK" out "$OUT_DIR" models "$OLLAMA_MODELS"
 
 # --- refuse the two mistakes that produce plausible-looking wrong numbers -------------
 if [[ "$MODEL" == "$JUDGE_MODEL" ]]; then
@@ -100,6 +111,17 @@ fi
                       exit 2; }
 [[ -d "$PROJ/backend" ]] || { echo "FATAL: project not found at $PROJ" >&2; exit 2; }
 mkdir -p "$OUT_DIR"
+# A v1 pack has one cl100k-budgeted context set for every model -- the inputs that
+# overflowed CodeLlama's window. Refuse it rather than reproduce that failure.
+python3 - "$PACK" "$MODEL" <<'PY' || exit 2
+import json, sys
+pack = json.load(open(sys.argv[1], encoding="utf-8"))
+if pack.get("version", 1) < 2:
+    sys.exit("FATAL: %s is a v%s pack; rebuild it as v2 (docs/REVISION_RUNS.md)." % (sys.argv[1], pack.get("version", 1)))
+missing = [r["parsed"]["metadata"]["name"] for r in pack["repositories"] if sys.argv[2] not in r.get("model_contexts", {})]
+if missing:
+    sys.exit("FATAL: pack has no contexts for %s (e.g. %s); rebuild with --models including it." % (sys.argv[2], missing[0]))
+PY
 
 # --- prove we are on a GPU before spending the allocation ------------------------------
 echo "=== GPU ==="
@@ -137,6 +159,8 @@ cd "$PROJ/backend"
 ARGS=(--context-pack "$PACK"
       --models "$MODEL"
       --judge-model "$JUDGE_MODEL"
+      --seed "$SEED"
+      --temperature "$GEN_TEMPERATURE"
       --no-bertscore
       --out "$OUT_DIR/battery_${RUN_TAG}.csv"
       --sqlite "$OUT_DIR/battery_${RUN_TAG}.db")

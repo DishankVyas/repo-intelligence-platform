@@ -166,6 +166,19 @@ def score_summary(
     )
 
 
+def _as_bool(value) -> Optional[bool]:
+    """Judges sometimes return "false" as a string, and bool("false") is True -- which
+    would silently score an unsupported claim as supported. Unreadable values return
+    None and the claim is dropped rather than guessed."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in ("true", "false", "yes", "no"):
+        return value.strip().lower() in ("true", "yes")
+    return None
+
+
 def _parse_verdict(raw_text: str) -> Optional[tuple[int, list[str], list[dict]]]:
     """Returns (total_claims, unsupported_claims, all_claims) or None if unparseable.
     Handles both the new all_claims format and backward-compatible total/unsupported keys."""
@@ -186,8 +199,9 @@ def _parse_verdict(raw_text: str) -> Optional[tuple[int, list[str], list[dict]]]
         for c in data["all_claims"]:
             if isinstance(c, dict) and "text" in c and "supported" in c:
                 text_val = str(c["text"]).strip()
-                if text_val:
-                    valid_claims.append({"text": text_val, "supported": bool(c["supported"])})
+                supported = _as_bool(c["supported"])
+                if text_val and supported is not None:
+                    valid_claims.append({"text": text_val, "supported": supported})
         unsupported = [c["text"] for c in valid_claims if not c["supported"]]
         total = len(valid_claims)
         return total, unsupported, valid_claims
