@@ -94,26 +94,58 @@ judge always runs at temperature 0, so only the summaries vary between repeats.
 The job stops immediately with `FATAL` if the pack is the old v1 file or lacks contexts
 for the model, so a wrong upload cannot silently produce a bad run.
 
-## Step 4 — PORTAL (optional): different-family judge on the new runs
+## Step 4 — PORTAL: second judges on the new main runs (2 jobs, recommended)
 
-The deterministic matcher (Step 6) already answers reviewer R3 without any model. To
-also have a second, different-family LLM judge on the new main runs, submit
-`hpc/run_rejudge.sh` with Job Script Arguments:
+Submit only after jobs 1–3 have finished: these re-score the three new main runs
+(temperature 0) without regenerating anything. Same form fields as the battery jobs,
+Job Script `hpc/run_rejudge.sh`:
 
-```
-mistral:7b-instruct rev_codellama13b_s42_t0 rev_qwen14b_s42_t0 rev_qwen32b_s42_t0
-```
+| # | Job Script Arguments | Why |
+|---|---|---|
+| 13 | `gemma2:27b rev_codellama13b_s42_t0 rev_qwen14b_s42_t0 rev_qwen32b_s42_t0` | the paper already reports gemma2:27b as its second judge; without this, that table would describe the old summaries |
+| 14 | `mistral:7b-instruct rev_codellama13b_s42_t0 rev_qwen14b_s42_t0 rev_qwen32b_s42_t0` | a judge from a different model family (reviewer R3) |
+
+The deterministic matcher (Step 6) answers R3 without any model, so these strengthen the
+result rather than being the only evidence. The variance runs (jobs 4–12) are not
+re-judged: their purpose is the spread under the primary judge.
 
 ## Step 5 — LOCAL: download
 
 From `/data/mpstme-dishank/evaluation_results/`, download every `battery_rev_*` and
 `rejudge_*_battery_rev_*` file into `backend/evaluation_results/`.
 
-## Step 6 — LOCAL: analyse
+## Step 6 — LOCAL: analyse (no GPU)
 
-The analysis of the new runs (four arms, mean ± SD across the three sampled runs, the
-deterministic matcher, and the fact inventory once it exists) runs on the laptop from
-the downloaded files. No GPU is needed.
+1. **BLEU-4 / ROUGE-L / METEOR** for the new main runs (the paper reports these), from
+   `backend/` with the venv active:
+
+   ```powershell
+   python -m scripts.populate_overlap battery_rev_codellama13b_s42_t0.csv battery_rev_qwen14b_s42_t0.csv battery_rev_qwen32b_s42_t0.csv
+   ```
+
+2. **The revision analysis** (four arms, mean ± SD across the three sampled runs, all
+   judges, the deterministic matcher): Claude extends `scripts/revision_analysis.py` to
+   the downloaded `battery_rev_*` files once they exist.
+
+3. **Fact inventory** (reviewer R1), once the annotations are written and marked
+   verified: `python -m scripts.score_fact_inventory`. It picks up the new runs
+   automatically.
+
+## Summary — everything that has to run
+
+| Where | What | Count |
+|---|---|---|
+| LOCAL | build `context_pack_v2.json` (Step 1) | once |
+| PORTAL | battery jobs 1–3: main results, temperature 0 | 3 (required) |
+| PORTAL | battery jobs 4–12: variance, temperature 0.7, seeds 1–3 | 9 (required) |
+| PORTAL | rejudge jobs 13–14: gemma2:27b and mistral on jobs 1–3 | 2 (recommended) |
+| LOCAL | text overlap, revision analysis, fact-inventory scoring (Step 6) | after download |
+
+Nothing else needs re-running: the published September batteries stay as reported,
+diagram accuracy is unchanged (the parse content is identical; see the parse
+comparison in the revision notes), and the human validation stays tied to the summaries
+it was done on. G-Eval rubric scores for the new runs are not set up; they would need
+one more GPU job.
 
 ---
 

@@ -81,6 +81,9 @@ def process_file(csv_path: str):
     print(f"Done {csv_path}: {updated} rows scored with BLEU-4, ROUGE-L, and METEOR ({skipped} skipped).")
 
 if __name__ == "__main__":
-    for stem in ["battery_codellama13b.csv", "battery_qwen14b.csv", "battery_qwen32b.csv"]:
-        target = os.path.join(EVAL_DIR, stem)
+    # CSV names (in evaluation_results/) may be given as arguments, e.g. the revision
+    # runs' battery_rev_*.csv; with none, the three published batteries as before.
+    stems = sys.argv[1:] or ["battery_codellama13b.csv", "battery_qwen14b.csv", "battery_qwen32b.csv"]
+    for stem in stems:
+        target = os.path.join(EVAL_DIR, os.path.basename(stem))
         process_file(target)

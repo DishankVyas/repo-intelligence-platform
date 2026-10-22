@@ -27,7 +27,7 @@ set -euo pipefail
 
 JUDGE="${1:-${JUDGE:-}}"
 # Optional further arguments name the batteries to re-judge (default: the published
-# three), e.g. "mistral:7b-instruct rev_codellama13b_s1 rev_qwen14b_s1 rev_qwen32b_s1".
+# three), e.g. "mistral:7b-instruct rev_codellama13b_s42_t0 rev_qwen14b_s42_t0 rev_qwen32b_s42_t0".
 if [[ $# -gt 1 ]]; then BATTERY_STEMS="${*:2}"; fi
 : "${JUDGE:?usage: run_rejudge.sh <secondary-judge>   e.g. mistral:7b-instruct}"
 
@@ -92,7 +92,7 @@ fi
 # All three new battery DBs must be present. A missing DB is a warning (we skip
 # it), but if NONE are found the job has nothing to do and should fail loudly.
 # BATTERY_STEMS overrides which batteries are re-judged, e.g. for the CICT-2026 revision
-# runs: BATTERY_STEMS="rev_codellama13b_s1 rev_qwen14b_s1 rev_qwen32b_s1".
+# runs: BATTERY_STEMS="rev_codellama13b_s42_t0 rev_qwen14b_s42_t0 rev_qwen32b_s42_t0".
 SRC_DBS=()
 for stem in ${BATTERY_STEMS:-codellama13b qwen14b qwen32b}; do
   p="$OUT_DIR/battery_${stem}.db"
