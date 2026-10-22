@@ -16,6 +16,11 @@
 #
 # Pass an optional phase in "Job Script Arguments":
 #
+#   revision        CICT-2026 revision runs (docs/REVISION_RUNS.md): the 3 main
+#                   batteries (4 arms incl. rag_bm25, temperature 0), the secondary
+#                   JUDGES on those, then 9 variance batteries (seeds 1-3, t=0.7).
+#                   Needs the v2 pack at $PACK and, from the setup notebook,
+#                   $DATA/gpu_env.sh. Does not need the September battery DBs.
 #   (no argument)   everything, in order: judges -> human -> quality
 #   judges          only the secondary judge(s) -- gemma2:27b by default; set
 #                   JUDGES="gemma2:27b mistral:7b-instruct" to run both
@@ -38,8 +43,10 @@ set -uo pipefail
 
 usage() {
   cat <<'EOF'
-usage: run_all.sh [all|judges|human|quality]
+usage: run_all.sh [all|judges|human|quality|revision]
 
+  revision              CICT-2026 revision: 3 main batteries -> JUDGES on them
+                        -> 9 variance batteries (resumable; see docs/REVISION_RUNS.md)
   (no argument) / all   run every phase in order: judges -> human -> quality
   judges                secondary judges only: gemma2:27b then mistral:7b-instruct
   human                 human-validation sample + full-claims rejudge + review sheet
@@ -64,7 +71,7 @@ esac
 
 PHASE="${1:-all}"
 case "$PHASE" in
-  all|judges|human|quality) ;;
+  all|judges|human|quality|revision) ;;
   *)
     echo "FATAL: unknown phase '$PHASE'." >&2
     usage >&2
@@ -72,6 +79,14 @@ case "$PHASE" in
 esac
 
 USER_NAME="${USER:-$(id -un)}"
+# GPU settings written by the setup notebook (section 3): driver library path, MIG
+# slice, Ollama env. Loaded before the PATH/LD_LIBRARY_PATH exports below, which
+# prepend to (not replace) what it sets, so every job's Ollama finds the GPU.
+GPU_ENV="${GPU_ENV:-/data/${USER_NAME}/gpu_env.sh}"
+if [[ -f "$GPU_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$GPU_ENV"
+fi
 # Exported, not just set: the judges phase shells out to run_rejudge.sh, which
 # recomputes these from the environment. Without export, an override passed to
 # run_all.sh would be silently ignored by that script and it would write its
@@ -94,7 +109,13 @@ mkdir -p "$NLTK_DATA" 2>/dev/null || true
 PRIMARY_JUDGE="gemma2:9b"
 # Default is gemma2:27b alone. mistral:7b-instruct is a valid second judge but
 # doubles the phase's runtime; add it with JUDGES="gemma2:27b mistral:7b-instruct".
-read -r -a SECONDARY_JUDGES <<< "${JUDGES:-gemma2:27b}"
+# The revision runs need both: mistral is the different-family judge reviewer R3 asks
+# for, and gemma2:27b is the second judge the paper already reports.
+if [[ "$PHASE" == "revision" ]]; then
+  read -r -a SECONDARY_JUDGES <<< "${JUDGES:-gemma2:27b mistral:7b-instruct}"
+else
+  read -r -a SECONDARY_JUDGES <<< "${JUDGES:-gemma2:27b}"
+fi
 DB_STEMS=(codellama13b qwen14b qwen32b)
 
 # --- logging ------------------------------------------------------------------
@@ -155,7 +176,9 @@ printf '  %-14s %s\n' \
 }
 
 MISSING_DBS=()
-for stem in "${DB_STEMS[@]}"; do
+# The revision phase produces its own batteries, so the September DBs are not needed.
+[[ "$PHASE" == "revision" ]] && DB_STEMS_REQUIRED=() || DB_STEMS_REQUIRED=("${DB_STEMS[@]}")
+for stem in ${DB_STEMS_REQUIRED[@]+"${DB_STEMS_REQUIRED[@]}"}; do
   [[ -f "$OUT_DIR/battery_${stem}.db" ]] || MISSING_DBS+=("battery_${stem}.db")
 done
 [[ ${#MISSING_DBS[@]} -eq 0 ]] || {
@@ -195,6 +218,17 @@ else
   echo "gemma2:27b needs ~17 GB VRAM and will not finish on CPU." >&2
   echo "Check 'Number of GPUs per Node' in the submission form." >&2
   exit 3
+fi
+if [[ "$PHASE" == "revision" ]]; then
+  [[ -f "$GPU_ENV" ]] && echo "GPU settings loaded from $GPU_ENV" \
+    || echo "WARNING: $GPU_ENV not found -- run the setup notebook first, or Ollama may not find the GPU."
+  python - "$PACK" <<'PY' || exit 2
+import json, sys
+pack = json.load(open(sys.argv[1], encoding="utf-8"))
+if pack.get("version", 1) < 2:
+    sys.exit("FATAL: %s is a v%s pack; the revision runs need the v2 pack (per-model contexts + rag_bm25)." % (sys.argv[1], pack.get("version", 1)))
+print("context pack: v%s, %d repositories" % (pack["version"], len(pack["repositories"])))
+PY
 fi
 
 # --- ollama -------------------------------------------------------------------
@@ -470,6 +504,123 @@ phase_quality() {
   return $rc
 }
 
+# --- phase 4: CICT-2026 revision runs -----------------------------------------
+REV_GENERATORS=(codellama:13b-instruct qwen2.5-coder:14b qwen2.5-coder:32b)
+REV_ROWS=72   # 18 repositories x 4 arms per battery
+
+rev_tag() {
+  case "$1" in
+    codellama:13b-instruct) echo codellama13b ;;
+    qwen2.5-coder:14b)      echo qwen14b ;;
+    qwen2.5-coder:32b)      echo qwen32b ;;
+    *)                      echo "$1" | tr ':/' '__' ;;
+  esac
+}
+
+free_ollama_port() {
+  # Each battery/rejudge script starts its own server; a leftover one (the setup
+  # notebook's, or a killed job's) would hold 11434 and the new one would not bind.
+  pkill -f 'ollama serve' 2>/dev/null || true
+  if command -v fuser >/dev/null 2>&1; then fuser -k 11434/tcp >/dev/null 2>&1 || true; fi
+  sleep 3
+}
+
+gpu_check_log() {
+  local log="$1"
+  [[ -f "$log" ]] || return 0
+  if grep -qiE 'no compatible gpu|library=cpu' "$log"; then
+    echo "WARNING: $(basename "$log") shows Ollama did NOT use the GPU for this run." >&2
+    return 1
+  fi
+  return 0
+}
+
+run_rev_battery() {
+  local model="$1" seed="$2" temp="$3" tag db rows rc
+  tag="rev_$(rev_tag "$model")_s${seed}_t${temp}"
+  db="$OUT_DIR/battery_${tag}.db"
+  # The harness writes its DB once, at the end, and appends. So a complete DB means
+  # this battery is done (skip it: re-running would duplicate every row), and an
+  # interrupted battery leaves no DB and simply runs again.
+  if [[ -f "$db" ]]; then
+    rows=$(python - "$db" <<'PY'
+import sqlite3, sys
+try:
+    print(sqlite3.connect(sys.argv[1]).execute('select count(*) from evaluation_runs').fetchone()[0])
+except Exception:
+    print(0)
+PY
+)
+    if [[ "$rows" -ge "$REV_ROWS" ]]; then
+      echo "--- skip battery_${tag}: already complete ($rows rows) ---"
+      return 0
+    fi
+    local aside="${db}.partial.$(date '+%Y%m%d%H%M%S')"
+    echo "WARNING: battery_${tag}.db has only $rows of $REV_ROWS rows; moved aside to $aside" >&2
+    mv "$db" "$aside"
+  fi
+  echo "--- battery $model seed=$seed temperature=$temp -> battery_${tag} ---"
+  free_ollama_port
+  bash "$PROJ/hpc/run_battery.sh" "$model" "$seed" "$temp"
+  rc=$?
+  gpu_check_log "$OUT_DIR/ollama_${tag}.log" || rc=1
+  [[ $rc -ne 0 ]] && echo "WARNING: battery_${tag} failed (rc=$rc); continuing." >&2
+  return $rc
+}
+
+fresh_parse_cache() {
+  # rejudge.py reuses $OUT_DIR/parse_cache when present. A cache from the September
+  # (v1) pack would score the new summaries against the old parse, so rebuild it from
+  # the v2 pack once. The old cache is renamed, never deleted.
+  local cache="$OUT_DIR/parse_cache" marker="$OUT_DIR/parse_cache/.from_v2_pack"
+  [[ -f "$marker" ]] && return 0
+  if [[ -d "$cache" ]] && [[ -n "$(ls -A "$cache" 2>/dev/null)" ]]; then
+    local aside="${cache}.v1.$(date '+%Y%m%d%H%M%S')"
+    mv "$cache" "$aside" && echo "moved the earlier parse cache aside to $aside"
+  fi
+  mkdir -p "$cache" && touch "$marker"
+}
+
+phase_revision() {
+  local rc_all=0 m s J rc
+  local main_stems=()
+  for m in "${REV_GENERATORS[@]}"; do main_stems+=("rev_$(rev_tag "$m")_s42_t0"); done
+
+  echo "=== revision 1/3: main batteries (temperature 0, 4 arms incl. rag_bm25) ==="
+  for m in "${REV_GENERATORS[@]}"; do
+    run_rev_battery "$m" 42 0 || rc_all=1
+  done
+
+  echo "=== revision 2/3: secondary judges on the new main runs: ${SECONDARY_JUDGES[*]} ==="
+  fresh_parse_cache
+  for J in "${SECONDARY_JUDGES[@]}"; do
+    echo "--- secondary judge: $J ---"
+    free_ollama_port
+    bash "$PROJ/hpc/run_rejudge.sh" "$J" "${main_stems[@]}"
+    rc=$?
+    gpu_check_log "$OUT_DIR/ollama_rejudge_$(echo "$J" | tr ':.' '__' | tr '/' '_').log" || rc=1
+    if [[ $rc -ne 0 ]]; then
+      echo "WARNING: secondary judge $J failed (rc=$rc). Continuing." >&2
+      rc_all=1
+      continue
+    fi
+    python -m scripts.dedupe_rejudge --results-dir "$OUT_DIR" \
+      || echo "WARNING: dedupe_rejudge failed; check for duplicate rows by hand." >&2
+    verify_rejudge_output "$J" || rc_all=1
+  done
+
+  echo "=== revision 3/3: variance batteries (seeds 1-3, temperature 0.7) ==="
+  for m in "${REV_GENERATORS[@]}"; do
+    for s in 1 2 3; do
+      run_rev_battery "$m" "$s" 0.7 || rc_all=1
+    done
+  done
+
+  echo "=== revision outputs ==="
+  ls -lh "$OUT_DIR"/battery_rev_* "$OUT_DIR"/rejudge_*_battery_rev_* 2>/dev/null
+  return $rc_all
+}
+
 # --- run ----------------------------------------------------------------------
 cd "$PROJ/backend" || { echo "FATAL: cannot cd to $PROJ/backend" >&2; exit 2; }
 
@@ -518,6 +669,7 @@ case "$PHASE" in
   judges)  run_phase judges  phase_judges  ;;
   human)   run_phase human   phase_human   ;;
   quality) run_phase quality phase_quality ;;
+  revision) run_phase revision phase_revision ;;
 esac
 
 # --- summary ------------------------------------------------------------------

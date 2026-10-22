@@ -58,6 +58,20 @@ Needs **Docker Desktop** running and **Python 3.12+** (the pinned `scipy` requir
   window. If it stops with that message, report the listed repos rather than working
   around it.
 
+## Alternative to steps 3-4: one command from a Jupyter terminal
+
+After the setup notebook (`hpc/00_setup_gpu_image.ipynb`) reports the GPU detected and
+the smoke test at 100% GPU, run everything in order (3 main batteries -> secondary
+judges on them -> 9 variance batteries) with:
+
+```bash
+cd /data/$USER/repo-intel-platform && JUDGES="mistral:7b-instruct gemma2:27b" nohup setsid bash ./hpc/run_all.sh revision > /data/$USER/run_all.boot.log 2>&1 & disown
+```
+
+It reads the v2 pack from `$DATA/context_pack.json` (override with `PACK=`), loads the
+notebook's `$DATA/gpu_env.sh`, and is safe to resubmit: complete batteries are skipped
+and the re-judging resumes. Progress: `tail -f /data/$USER/evaluation_results/run_all.log`.
+
 ## Step 2 — PORTAL: upload
 
 Upload to `/data/mpstme-dishank/`:
